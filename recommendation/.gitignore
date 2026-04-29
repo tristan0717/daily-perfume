@@ -1,0 +1,15 @@
+Fast-API/venv/
+perfume-frontend/node_modules/
+recommendation/build/
+recommendation/target/
+
+# 🔒 보안 파일 (해킹 방지)
+Fast-API/.env
+recommendation/src/main/resources/application.yml
+recommendation/src/main/resources/application.properties
+
+# 🗑️ 기타 찌꺼기 파일들
+__pycache__/
+.DS_Store
+*.pkl
+*.index

@@ -1,0 +1,11 @@
+Fast-API/venv/
+perfume-frontend/node_modules/
+recommendation/build/
+recommendation/target/
+Fast-API/.env
+recommendation/src/main/resources/application.yml
+recommendation/src/main/resources/application.properties
+__pycache__/
+.DS_Store
+*.pkl
+*.index
