@@ -1,9 +1,13 @@
 import csv
-import pymysql # 아까 파이썬 서버에서 쓰셨던 라이브러리
+import pymysql
+import os                     # 운영체제 기능 사용
+from dotenv import load_dotenv # .env 읽어오는 기능
 
-# DB 연결 (본인 비밀번호로 꼭 수정하세요!)
-conn = pymysql.connect(host='localhost', user='root', password='wjddn0717', db='perfume_db', charset='utf8mb4')
-cursor = conn.cursor()
+load_dotenv()
+
+db_password = os.getenv("DB_PASSWORD")
+
+conn = pymysql.connect(host='localhost', user='root', password=db_password, db='perfume_db', charset='utf8mb4')
 
 # 1. 테이블 새로 만들기 (기존에 꼬인게 있으면 덮어씁니다)
 cursor.execute("DROP TABLE IF EXISTS note_mapping")
