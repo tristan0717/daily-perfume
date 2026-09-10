@@ -1,37 +1,24 @@
 package com.reco.recommendation.service;
 
-import com.fasterxml.jackson.core.type.TypeReference;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.core.io.ClassPathResource;
 import org.springframework.stereotype.Component;
-
-import java.util.HashMap;
-import java.util.Map;
+import java.io.InputStreamReader;
+import java.nio.charset.StandardCharsets;
+import java.util.*;
 
 @Component
 public class NoteImageMapLoader {
-
-    private final Map<String, String> map = new HashMap<>();
-
-    public NoteImageMapLoader(ObjectMapper objectMapper) {
-        try {
-            ClassPathResource resource = new ClassPathResource("note-image-map.json");
-            if (resource.exists()) {
-                Map<String, String> loaded = objectMapper.readValue(
-                        resource.getInputStream(),
-                        new TypeReference<Map<String, String>>() {}
-                );
-
-                // key를 소문자로 정규화
-                loaded.forEach((k, v) -> map.put(k.toLowerCase().trim(), v));
-            }
-        } catch (Exception e) {
-            System.out.println("[NoteImageMapLoader] JSON load failed: " + e.getMessage());
+    private final Properties map = new Properties();
+    public NoteImageMapLoader() {
+        var resource = new ClassPathResource("note-images.properties");
+        if (!resource.exists()) return;
+        try (var reader = new InputStreamReader(resource.getInputStream(), StandardCharsets.UTF_8)) {
+            map.load(reader);
+        } catch (java.io.IOException e) {
+            throw new IllegalStateException("Cannot read note image manifest", e);
         }
     }
-
     public String get(String note) {
-        if (note == null) return null;
-        return map.get(note.toLowerCase().trim());
+        return note == null ? null : map.getProperty(note.trim().toLowerCase(Locale.ROOT));
     }
 }

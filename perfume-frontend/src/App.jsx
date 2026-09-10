@@ -1,20 +1,31 @@
 import { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
 import './App.css';
+import NoteList from './NoteList';
+import PerfumeModal from './PerfumeModal';
+import { LIKES_KEY, readLikes, perfumeKey, togglePerfume, validPerfume } from './perfume-data';
+const api = axios.create({ baseURL: import.meta.env.VITE_API_BASE_URL || '', timeout: 65000 });
 
 function App() {
   const [view, setView] = useState('home'); 
   const [selectedPerfume, setSelectedPerfume] = useState(null);
   const [recommendations, setRecommendations] = useState([]);
-  const discoveryRef = useRef(null);
+  const detailRequest = useRef(null);
+  const searchRequest = useRef(null);
+  const busy = useRef(false);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [detailError, setDetailError] = useState('');
+  const [storageError, setStorageError] = useState('');
+  const [excludedNotes, setExcludedNotes] = useState([]);
+  useEffect(() => () => { detailRequest.current?.abort(); searchRequest.current?.abort(); }, []);
   
   const [likedPerfumes, setLikedPerfumes] = useState(() => {
-    const saved = localStorage.getItem('daily-perfume-likes');
-    return saved ? JSON.parse(saved) : [];
+    try { return readLikes(window.localStorage); } catch { return []; }
   });
-
   useEffect(() => {
-    localStorage.setItem('daily-perfume-likes', JSON.stringify(likedPerfumes));
+    try {
+      localStorage.setItem(LIKES_KEY, JSON.stringify(likedPerfumes));
+    } catch { /* Likes remain available in memory if storage is unavailable. */ }
   }, [likedPerfumes]);
 
   const [step, setStep] = useState(1);
@@ -48,23 +59,47 @@ function App() {
 
   const toggleLike = (e, p) => {
     e.stopPropagation();
-    if (likedPerfumes.find(item => item.name === p.name)) {
-      setLikedPerfumes(likedPerfumes.filter(item => item.name !== p.name));
-    } else {
-      setLikedPerfumes([...likedPerfumes, p]);
+    const next = togglePerfume(likedPerfumes, p);
+    setLikedPerfumes(next);
+    try { localStorage.setItem(LIKES_KEY, JSON.stringify(next)); setStorageError(''); }
+    catch { setStorageError('브라우저에 저장하지 못했습니다. 이번 방문 동안만 찜 목록이 유지됩니다.'); }
+  };
+
+  const closeDetail = () => { detailRequest.current?.abort(); setSelectedPerfume(null); };
+  const handleCardClick = async (p) => {
+    detailRequest.current?.abort();
+    const controller = new AbortController();
+    detailRequest.current = controller;
+    setSelectedPerfume(p);
+    setRecommendations([]);
+    setDetailError('');
+    setDetailLoading(true);
+    try {
+      let id = p.id;
+      if (!Number.isSafeInteger(id) || id <= 0) {
+        const lookup = await api.get('/api/perfumes/db-search', { params: { keyword: p.name, size: 100 }, signal: controller.signal });
+        const matches = (lookup.data.content || []).filter(r => r.name === p.name && r.brand === p.brand);
+        if (matches.length !== 1) throw new Error('이전 찜 항목의 제품을 확인하지 못했습니다. 다시 검색해 주세요.');
+        id = matches[0].id;
+      }
+      const detail = await api.get(`/api/perfumes/${id}`, { signal: controller.signal });
+      if (controller.signal.aborted) return;
+      setSelectedPerfume(detail.data);
+      setLikedPerfumes(items => items.map(item => perfumeKey(item) === perfumeKey(p) ? detail.data : item));
+      const related = await api.get(`/api/perfumes/${id}/recommendations`, { signal: controller.signal });
+      if (!controller.signal.aborted) setRecommendations(Array.isArray(related.data) ? related.data : []);
+    } catch (err) {
+      if (!controller.signal.aborted) setDetailError(err.response?.data?.message || '상세 정보 또는 비슷한 향수를 불러오지 못했습니다.');
+    } finally {
+      if (!controller.signal.aborted) setDetailLoading(false);
     }
   };
 
-  const handleCardClick = async (p) => {
-    setSelectedPerfume(p);
-    try {
-      const res = await axios.get(`/api/perfumes/${p.id}/recommendations`);
-      setRecommendations(res.data || []);
-    } catch (err) { console.error(err); }
-  };
-
-  const executeSearch = async (textToSearch) => {
-    if (!textToSearch.trim() || isLoading) return;
+  const executeSearch = async (textToSearch, exclusions = excludedNotes) => {
+    if (!textToSearch.trim() || busy.current) return;
+    busy.current = true;
+    const controller = new AbortController();
+    searchRequest.current = controller;
 
     setMessages(prev => [...prev, { role: 'user', text: textToSearch }]);
     setIsLoading(true); 
@@ -75,23 +110,24 @@ function App() {
       : textToSearch;
 
     try {
-      const res = await axios.get(`/api/perfumes/search?keyword=${encodeURIComponent(contextQuery)}`);
+      const res = await api.post('/api/perfumes/search', { keyword: contextQuery.slice(-1000), excludedNotes: exclusions }, { signal: controller.signal });
       
-      const recData = res.data.recommendations || [];
+      const recData = Array.isArray(res.data.recommendations) ? res.data.recommendations.filter(validPerfume) : [];
       const customPerfumeData = res.data.custom_perfume || null;
 
       setMessages(prev => [...prev, {
         role: 'bot',
         text: recData.length > 0 
-          ? `'${textToSearch}'에 대한 결과입니다. 마음에 드는 노트를 클릭해 추가로 탐색해 보세요!` 
+          ? (res.data.fallback ? 'AI 설명을 일시적으로 사용할 수 없어 향수 데이터 기반 검색 결과를 보여드립니다.' : `'${textToSearch}'에 대한 결과입니다. 마음에 드는 노트를 클릭해 추가로 탐색해 보세요!`) 
           : `앗, 해당하는 향수를 찾지 못했습니다. 다르게 표현해 주시겠어요?`,
         results: recData,
         customPerfume: customPerfumeData 
       }]);
     } catch (err) {
       console.error(err);
-      setMessages(prev => [...prev, { role: 'bot', text: '오류가 발생했습니다. 잠시 후 다시 시도해주세요.' }]);
+      if (!controller.signal.aborted) setMessages(prev => [...prev, { role: 'bot', text: err.response?.data?.message || '검색에 실패했습니다. 잠시 후 다시 시도해 주세요.' }]);
     } finally {
+      busy.current = false;
       setIsLoading(false); 
     }
   };
@@ -109,9 +145,12 @@ function App() {
     setStep(1); 
     setView('chat');
     
-    executeSearch(finalPrompt);
+    const exclusions = finalAvoidParam === '달콤한 향' ? ['Vanilla', 'Caramel', 'Sugar', 'Cotton Candy', 'Honey', 'Praline', 'Tonka Bean'] : finalAvoidParam === '무거운 향' ? ['Agarwood (Oud)', 'Agarwood', 'Oud', 'Leather', 'Tobacco', 'Incense'] : [];
+    setExcludedNotes(exclusions);
+    executeSearch(finalPrompt, exclusions);
   };
 
+  const renderView = () => {
   // ==========================================
   // 1. 홈 화면 
   // ==========================================
@@ -203,7 +242,7 @@ function App() {
             )}
             {step === 3 && (
               <div>
-                <h2 style={{ marginBottom: '30px', color: '#111' }}>피하고 싶은 향이 있나요?</h2>
+                <h2 style={{ marginBottom: '30px', color: '#111' }}>피하고 싶은 향이 있나요?</h2><p>달콤한 향은 바닐라·카라멜·설탕·솜사탕·꿀·프랄린·통카빈, 무거운 향은 우드·가죽·담배·인센스 노트를 제외합니다.</p>
                 {['달콤한 향', '무거운 향', '없음'].map(a => (
                   <button key={a} className="btn--primary" style={{ width: '100%', marginBottom: '10px', padding: '15px' }} onClick={() => { 
                     handleOnboardingComplete(a); 
@@ -234,27 +273,12 @@ function App() {
           ) : (
             <div className="chat-results" style={{display:'flex', flexDirection:'column'}}>
               {likedPerfumes.map(p => (
-                <div key={p.id || p.name} className="perf-card chat-perf-card" onClick={() => handleCardClick(p)} style={{ position: 'relative' }}>
+                <div key={perfumeKey(p)} className="perf-card chat-perf-card" onClick={() => handleCardClick(p)} style={{ position: 'relative' }}>
                   <div onClick={(e) => toggleLike(e, p)} style={{ position: 'absolute', top: '15px', right: '15px', fontSize: '20px', cursor: 'pointer' }}>❤️</div>
                   <div style={{color:'var(--primary)', fontWeight:700, fontSize:'11px', marginBottom:'4px'}}>{p.brand}</div>
                   <div style={{fontSize:'1.1rem', fontWeight:800, marginBottom:'10px', color:'#111', lineHeight:1.2}}>{p.name}</div>
                   
-                  <div className="note-list" style={{display: 'flex', flexDirection: 'column', gap: '5px'}}>
-                    {['topNotes', 'middleNotes', 'baseNotes'].map(type => (
-                      p[type] && p[type].length > 0 && (
-                        <div key={type}>
-                          <span style={{fontSize:'10px', fontWeight:'bold', color:'#888', marginRight:'5px'}}>
-                            {type === 'topNotes' ? 'TOP' : type === 'middleNotes' ? 'MID' : 'BASE'}:
-                          </span>
-                          {p[type].map((n, i) => (
-                            <span key={i} style={{ display:'inline-block', background:'var(--chip-bg)', color:'var(--primary-700)', padding:'4px 8px', borderRadius:'6px', fontSize:'11px', marginRight:'4px' }}>
-                              {n.kor}
-                            </span>
-                          ))}
-                        </div>
-                      )
-                    ))}
-                  </div>
+                  <NoteList perfume={p} />
                 </div>
               ))}
             </div>
@@ -301,44 +325,19 @@ function App() {
               
               {msg.results && msg.results.length > 0 && (
                 <div className="chat-results">
-                  {msg.results.map((p, i) => {
-                    const isLiked = likedPerfumes.find(item => item.name === p.name);
+                  {msg.results.map((p) => {
+                    const isLiked = likedPerfumes.find(item => perfumeKey(item) === perfumeKey(p));
 
                     return (
-                      <div key={p.id || p.name || i} className="perf-card chat-perf-card" onClick={() => handleCardClick(p)} style={{ position: 'relative' }}>
+                      <div key={perfumeKey(p)} className="perf-card chat-perf-card" onClick={() => handleCardClick(p)} style={{ position: 'relative' }}>
                         <div onClick={(e) => toggleLike(e, p)} style={{ position: 'absolute', top: '15px', right: '15px', fontSize: '20px', cursor: 'pointer' }}>
                           {isLiked ? '❤️' : '🤍'}
                         </div>
                         <div style={{color:'var(--primary)', fontWeight:700, fontSize:'11px', marginBottom:'4px'}}>{p.brand}</div>
                         <div style={{fontSize:'1.1rem', fontWeight:800, marginBottom:'10px', color:'#111', lineHeight:1.2, width: '85%'}}>{p.name}</div>
                         
-                        <div className="note-list" style={{display: 'flex', flexDirection: 'column', gap: '5px'}}>
-                          {['topNotes', 'middleNotes', 'baseNotes'].map(type => {
-                            if (!p[type] || p[type].length === 0) return null;
-                            const label = type === 'topNotes' ? 'TOP' : type === 'middleNotes' ? 'MID' : 'BASE';
-                            
-                            return (
-                              <div key={type} style={{display: 'flex', flexWrap: 'wrap', alignItems: 'center'}}>
-                                <span style={{fontSize:'10px', fontWeight:'bold', color:'#888', marginRight:'5px'}}>{label}:</span>
-                                
-                                {p[type].map((n, j) => {
-                                  return (
-                                    <span 
-                                      key={j} 
-                                      onMouseEnter={() => setHoveredNote(n.eng)}
-                                      onMouseLeave={() => setHoveredNote(null)}
-                                      onMouseMove={(e) => setMousePos({ x: e.clientX, y: e.clientY })}
-                                      onClick={(e) => { e.stopPropagation(); executeSearch(`"${n.kor}" 노트가 들어간 다른 향수 찾아줘`); }}
-                                      style={{ display:'inline-block', background:'var(--chip-bg)', color:'var(--primary-700)', padding:'4px 8px', borderRadius:'6px', fontSize:'11px', marginRight:'4px', marginBottom:'4px', cursor: 'pointer' }}
-                                    >
-                                      {n.kor}
-                                    </span>
-                                  );
-                                })}
-                              </div>
-                            );
-                          })}
-                        </div>
+                        <NoteList perfume={p} onSearch={executeSearch} onHover={setHoveredNote}
+                          onMove={e => setMousePos({ x: e.clientX, y: e.clientY })} />
                       </div>
                     );
                   })}
@@ -348,7 +347,7 @@ function App() {
               {/* 🔥 AI 조향사 커스텀 믹스 향수 UI (피라미드 구조 적용) */}
               {msg.customPerfume && (
                 <div className="custom-perfume-card" style={{ marginTop: '15px', padding: '20px', backgroundColor: '#fdfbf7', borderRadius: '12px', border: '1px solid #e8e0d5', maxWidth: '80%' }}>
-                  <h4 style={{ margin: '0 0 10px 0', color: '#8a6d3b', fontSize: '13px' }}>🧪 AI 조향사의 특별한 믹스 제안</h4>
+                  <h4 style={{ margin: '0 0 10px 0', color: '#8a6d3b', fontSize: '13px' }}>🧪 AI가 상상한 조향 제안 (실제 제품 아님)</h4>
                   <div style={{ fontSize: '1.2rem', fontWeight: 'bold', marginBottom: '15px', color: '#111' }}>"{msg.customPerfume.name}"</div>
                   
                   {/* 💎 향기 피라미드 스타일 */}
@@ -429,12 +428,13 @@ function App() {
             ))}
           </div>
 
+          {excludedNotes.length > 0 && <div className="active-filter">제외 노트: {excludedNotes.join(', ')} <button type="button" onClick={() => setExcludedNotes([])}>필터 해제</button></div>}
           <form className="chat-form" onSubmit={handleSendMessage} style={{ position: 'relative', margin: 0 }}>
             <input 
               type="text" className="chat-input" placeholder="찾으시는 향수나 분위기를 입력해주세요..."
-              value={inputValue} onChange={(e) => setInputValue(e.target.value)} disabled={isLoading} autoFocus
+              maxLength={600} aria-label="향수 검색 내용" value={inputValue} onChange={(e) => setInputValue(e.target.value)} disabled={isLoading} autoFocus
             />
-            <button type="submit" className="chat-submit" disabled={isLoading}>
+            <button type="submit" className="chat-submit" aria-label="검색 보내기" disabled={isLoading}>
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <line x1="22" y1="2" x2="11" y2="13"></line>
                 <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
@@ -445,61 +445,25 @@ function App() {
       </main>
 
       {hoveredNote && (
-        <div style={{ position: 'fixed', top: `${mousePos.y + 15}px`, left: `${mousePos.x + 15}px`, backgroundColor: 'white', border: '1px solid #eee', padding: '10px', borderRadius: '12px', boxShadow: '0 8px 16px rgba(0,0,0,0.15)', zIndex: 9999, textAlign: 'center', pointerEvents: 'none' }}>
+        <div style={{ position: 'fixed', top: `${Math.max(0, Math.min(mousePos.y + 15, window.innerHeight - 160))}px`, left: `${Math.max(0, Math.min(mousePos.x + 15, window.innerWidth - 160))}px`, backgroundColor: 'white', border: '1px solid #eee', padding: '10px', borderRadius: '12px', boxShadow: '0 8px 16px rgba(0,0,0,0.15)', zIndex: 9999, textAlign: 'center', pointerEvents: 'none' }}>
           <img 
-            src={`/note-images/${hoveredNote}.jpg`} alt={hoveredNote} 
+            src={hoveredNote.imageUrl || '/note-images/default.svg'} alt={hoveredNote.kor || hoveredNote.note}
             style={{ width: '120px', height: '120px', objectFit: 'cover', borderRadius: '8px', display: 'block' }}
-            onError={(e) => {
-              const currentSrc = e.target.src;
-              if (currentSrc.endsWith('.jpg')) e.target.src = `/note-images/${hoveredNote}.png`;
-              else if (currentSrc.endsWith('.png')) e.target.src = `/note-images/${hoveredNote}.jpeg`;
-              else e.target.style.display = 'none'; 
-            }} 
+            onError={e => { e.currentTarget.onerror = null; e.currentTarget.src = '/note-images/default.svg'; }}
           />
         </div>
       )}
 
-      {selectedPerfume && (
-        <div className="modal-overlay" onClick={() => setSelectedPerfume(null)}>
-          <div className="modal-content" onClick={e => e.stopPropagation()}>
-            <span style={{color:'var(--primary)', fontWeight:700}}>{selectedPerfume.brand}</span>
-            <h2 style={{fontSize:'2.5rem', margin:'10px 0', color:'#111'}}>{selectedPerfume.name}</h2>
-            
-            {}
 
-            <p style={{lineHeight:1.8, color:'#555', marginBottom: '20px'}}>{selectedPerfume.description || "상세 정보가 로딩 중입니다."}</p>
-            
-            <div style={{ backgroundColor: '#f9f9f9', padding: '20px', borderRadius: '12px', marginBottom: '20px' }}>
-              <h3 style={{ marginTop: 0, borderBottom: '2px solid #ddd', paddingBottom: '10px', fontSize: '18px', color: '#333' }}>💎 향기 피라미드</h3>
-              
-              <div style={{ marginBottom: '15px' }}>
-                <strong style={{ display: 'block', color: '#666', fontSize: '12px', marginBottom: '5px' }}>TOP NOTES (첫인상)</strong>
-                {selectedPerfume.topNotes?.length > 0 ? selectedPerfume.topNotes.map((n, i) => <span key={i} style={{ marginRight: '8px', fontWeight: 'bold', color: '#444' }}>{n.kor}</span>) : <span>정보 없음</span>}
-              </div>
-              <div style={{ marginBottom: '15px' }}>
-                <strong style={{ display: 'block', color: '#666', fontSize: '12px', marginBottom: '5px' }}>MIDDLE NOTES (메인 향)</strong>
-                {selectedPerfume.middleNotes?.length > 0 ? selectedPerfume.middleNotes.map((n, i) => <span key={i} style={{ marginRight: '8px', fontWeight: 'bold', color: '#444' }}>{n.kor}</span>) : <span>정보 없음</span>}
-              </div>
-              <div>
-                <strong style={{ display: 'block', color: '#666', fontSize: '12px', marginBottom: '5px' }}>BASE NOTES (잔향)</strong>
-                {selectedPerfume.baseNotes?.length > 0 ? selectedPerfume.baseNotes.map((n, i) => <span key={i} style={{ marginRight: '8px', fontWeight: 'bold', color: '#444' }}>{n.kor}</span>) : <span>정보 없음</span>}
-              </div>
-            </div>
-
-            <h4 style={{marginTop:'30px', color:'#111'}}>🌿 비슷한 향수</h4>
-            <div style={{display:'flex', gap:'10px', overflowX:'auto'}}>
-              {recommendations.map(r => (
-                <div key={r.id} className="perf-card" style={{minWidth:'160px', padding:'15px'}} onClick={() => handleCardClick(r)}>
-                  <div style={{fontSize:'10px', color:'var(--primary)'}}>{r.brand}</div>
-                  <div style={{fontWeight:'bold', fontSize:'13px', color:'#111'}}>{r.name}</div>
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
+  };
+  return <>
+    {storageError && <p role="status" className="storage-error">{storageError}</p>}
+    {renderView()}
+    <PerfumeModal perfume={selectedPerfume} recommendations={recommendations} loading={detailLoading}
+      error={detailError} onClose={closeDetail} onSelect={handleCardClick} />
+  </>;
 }
 
 export default App;

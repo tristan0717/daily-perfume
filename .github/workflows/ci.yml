@@ -1,0 +1,51 @@
+name: Verify application
+on:
+  push:
+    branches: ['fix/**']
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: perfume-frontend/package-lock.json
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '9.4.1'
+      - run: python -m pip install 'Pillow>=11,<13'
+      - run: python -m unittest discover -s Fast-API/tests -v
+      - run: python -m compileall -q Fast-API recommendation/import_notes.py scripts
+      - run: npm ci
+        working-directory: perfume-frontend
+      - run: npm run lint && npm test && npm run build
+        working-directory: perfume-frontend
+      - run: gradle test bootJar --no-daemon
+        working-directory: recommendation
+      - run: npm install --no-save playwright
+        working-directory: perfume-frontend
+      - run: npx playwright install --with-deps chromium
+        working-directory: perfume-frontend
+      - run: node tests/browser.mjs
+        working-directory: perfume-frontend
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: verification-results
+          path: |
+            recommendation/build/reports/tests/
+            perfume-frontend/test-results/

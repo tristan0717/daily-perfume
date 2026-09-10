@@ -34,7 +34,8 @@ public interface PerfumeRepository extends JpaRepository<Perfume, Long> {
     @Query("""
         SELECT p 
         FROM Perfume p 
-        WHERE LOWER(COALESCE(p.notes, '')) LIKE LOWER(CONCAT('%', :note, '%'))
+        WHERE (LOCATE(CONCAT(',', LOWER(:note), ','), CONCAT(',', LOWER(REPLACE(COALESCE(p.notes, ''), ', ', ',')), ',')) > 0
+            OR LOCATE(CONCAT('"', LOWER(:note), '"'), LOWER(COALESCE(p.notes, ''))) > 0)
         AND p.id != :currentId
         """)
     List<Perfume> findRecommendedByNote(@Param("note") String note, @Param("currentId") Long currentId, Pageable pageable);
