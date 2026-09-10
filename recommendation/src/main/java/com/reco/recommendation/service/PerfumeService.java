@@ -1,80 +1,71 @@
 package com.reco.recommendation.service;
 
 import com.reco.recommendation.domain.Perfume;
-import com.reco.recommendation.dto.NoteImageDto;
-import com.reco.recommendation.dto.PerfumeResponseDto;
+import com.reco.recommendation.dto.*;
 import com.reco.recommendation.repository.PerfumeRepository;
-import org.springframework.data.domain.Page;
-import org.springframework.data.domain.PageRequest;
-import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.*;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-
-import java.util.Arrays;
-import java.util.List;
-import java.util.stream.Collectors;
+import java.util.*;
 
 @Service
-@Transactional(readOnly = true) // 성능 최적화
+@Transactional(readOnly = true)
 public class PerfumeService {
-
-    private final PerfumeRepository perfumeRepository;
-    private final NoteImageResolver noteImageResolver;
-
-    public PerfumeService(PerfumeRepository perfumeRepository, NoteImageResolver noteImageResolver) {
-        this.perfumeRepository = perfumeRepository;
-        this.noteImageResolver = noteImageResolver;
+    private final PerfumeRepository repository;
+    private final NoteImageResolver images;
+    private final NoteTranslations translations;
+    public PerfumeService(PerfumeRepository repository, NoteImageResolver images, NoteTranslations translations) {
+        this.repository = repository;
+        this.images = images;
+        this.translations = translations;
     }
-
-    public Page<PerfumeResponseDto> getPerfumes(Pageable pageable) {
-        return perfumeRepository.findAll(pageable)
-                .map(p -> PerfumeResponseDto.from(p, buildNoteImages(p.getNotes())));
+    private static final tools.jackson.databind.json.JsonMapper JSON = tools.jackson.databind.json.JsonMapper.builder().build();
+    private List<NoteImageDto> noteDtos(List<String> names) {
+        return names.stream().map(n -> new NoteImageDto(n, translations.translate(n), images.resolveUrl(n))).toList();
     }
-
-    public Page<PerfumeResponseDto> search(String keyword, Pageable pageable) {
-        return perfumeRepository.searchByKeyword(keyword, pageable)
-                .map(p -> PerfumeResponseDto.from(p, buildNoteImages(p.getNotes())));
+    public PerfumeResponseDto toDto(Perfume p) {
+        var groups = noteGroups(p.getNotes());
+        return new PerfumeResponseDto(p.getId(), p.getName(), p.getBrand(), p.getCategory(),
+            String.join(", ", splitNotes(p.getNotes())), p.getDescription(), p.getImageUrl(),
+            noteDtos(splitNotes(p.getNotes())), noteDtos(groups.getOrDefault("top", List.of())),
+            noteDtos(groups.getOrDefault("middle", List.of())), noteDtos(groups.getOrDefault("base", List.of())));
     }
-
-    public PerfumeResponseDto getPerfume(Long id) {
-        Perfume p = perfumeRepository.findById(id)
-                .orElseThrow(() -> new IllegalArgumentException("Perfume not found: " + id));
-        return PerfumeResponseDto.from(p, buildNoteImages(p.getNotes()));
-    }
-
-    /**
-     * [추가된 핵심 로직] 유사한 향수 추천
-     * 현재 보고 있는 향수의 첫 번째 노트를 기준으로 유사한 향수 5개를 추천합니다.
-     */
-    public List<PerfumeResponseDto> getRecommendedPerfumes(Long id) {
-        Perfume target = perfumeRepository.findById(id)
-                .orElseThrow(() -> new IllegalArgumentException("Perfume not found: " + id));
-
-        if (target.getNotes() == null || target.getNotes().isBlank()) {
-            return List.of();
+    private static List<String> strings(tools.jackson.databind.JsonNode array) {
+        List<String> result = new ArrayList<>();
+        if (array.isArray()) for (var item : array) {
+            if (item.isTextual() && !item.asText().isBlank()) result.add(item.asText().trim());
         }
-
-        // 첫 번째 노트를 대표 키워드로 추출
-        String mainNote = target.getNotes().split(",")[0].trim();
-
-        // 같은 노트를 가진 향수 검색 (최대 6개 가져와서 본인 제외)
-        Page<Perfume> recommendations = perfumeRepository.searchByKeyword(mainNote, PageRequest.of(0, 6));
-
-        return recommendations.getContent().stream()
-                .filter(p -> !p.getId().equals(id)) // 현재 보고 있는 향수는 제외
-                .limit(5)
-                .map(p -> PerfumeResponseDto.from(p, buildNoteImages(p.getNotes())))
-                .collect(Collectors.toList());
+        return result.stream().distinct().toList();
     }
-
-    private List<NoteImageDto> buildNoteImages(String notes) {
-        if (notes == null || notes.isBlank()) return List.of();
-
-        return Arrays.stream(notes.split(","))
-                .map(String::trim)
-                .filter(s -> !s.isBlank())
-                .distinct()
-                .map(note -> new NoteImageDto(note, noteImageResolver.resolveUrl(note)))
-                .collect(Collectors.toList()); // 자바 버전에 따라 .toList() 혹은 .collect() 사용
+    public static Map<String,List<String>> noteGroups(String notes) {
+        if (notes == null || !notes.trim().startsWith("{")) return Map.of();
+        try {
+            var node = JSON.readTree(notes);
+            return Map.of("top", strings(node.path("top")), "middle", strings(node.path("middle")), "base", strings(node.path("base")));
+        } catch (RuntimeException e) { return Map.of(); }
+    }
+    public static List<String> splitNotes(String notes) {
+        if (notes == null || notes.isBlank() || "null".equalsIgnoreCase(notes.trim())) return List.of();
+        if (notes.trim().startsWith("{")) {
+            var groups = noteGroups(notes);
+            return java.util.stream.Stream.of("top", "middle", "base").flatMap(k -> groups.getOrDefault(k, List.of()).stream()).distinct().toList();
+        }
+        if (notes.trim().startsWith("[")) {
+            try { return strings(JSON.readTree(notes)); } catch (RuntimeException e) { return List.of(); }
+        }
+        return Arrays.stream(notes.split(",")).map(String::trim).filter(n -> !n.isBlank()).distinct().toList();
+    }
+    public Page<PerfumeResponseDto> getPerfumes(Pageable pageable) { return repository.findAll(pageable).map(this::toDto); }
+    public Page<PerfumeResponseDto> search(String keyword, Pageable pageable) { return repository.searchByKeyword(keyword, pageable).map(this::toDto); }
+    public PerfumeResponseDto getPerfume(Long id) { return toDto(find(id)); }
+    private Perfume find(Long id) {
+        return repository.findById(id).orElseThrow(() -> new NoSuchElementException("Perfume not found"));
+    }
+    public List<PerfumeResponseDto> getRecommendedPerfumes(Long id) {
+        var target = find(id);
+        var notes = splitNotes(target.getNotes());
+        if (notes.isEmpty()) return List.of();
+        return repository.findRecommendedByNote(notes.get(0), id, PageRequest.of(0, 5, Sort.by("id")))
+            .stream().map(this::toDto).toList();
     }
 }

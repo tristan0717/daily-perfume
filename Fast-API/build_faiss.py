@@ -1,37 +1,39 @@
+"""Publish a versioned index and metadata together, then atomically switch CURRENT."""
+import json
+import os
+from pathlib import Path
+from uuid import uuid4
 import pandas as pd
-import os 
-from dotenv import load_dotenv 
-from sqlalchemy import create_engine
-from sentence_transformers import SentenceTransformer
-import faiss
-import pickle
+from db_config import ROOT, database_engine
+from data_utils import note_text
 
-load_dotenv()
-db_user = os.getenv("DB_USER")
-db_password = os.getenv("DB_PASSWORD")
-db_host = os.getenv("DB_HOST")
-db_name = os.getenv("DB_NAME")
+MODEL = 'snunlp/KR-SBERT-V40K-klueNLI-augSTS'
 
-print("📦 DB에서 향수 데이터를 불러옵니다...")
-engine = create_engine(f'mysql+pymysql://{db_user}:{db_password}@{db_host}:3306/{db_name}')
-df = pd.read_sql("SELECT * FROM perfumes", engine)
+def main():
+    import faiss
+    from sentence_transformers import SentenceTransformer
+    engine = database_engine()
+    try:
+        frame = pd.read_sql('SELECT id, brand, name, category, notes FROM perfumes ORDER BY id', engine)
+    finally:
+        engine.dispose()
+    if frame.empty or frame['id'].isna().any() or frame['id'].duplicated().any():
+        raise ValueError('A non-empty database with unique IDs is required')
+    frame['notes'] = frame['notes'].fillna('').map(note_text)
+    texts = frame[['category', 'notes', 'name', 'brand']].fillna('').astype(str).agg(' '.join, axis=1)
+    model = SentenceTransformer(MODEL)
+    embeddings = model.encode(texts.tolist(), normalize_embeddings=True, convert_to_numpy=True).astype('float32')
+    index = faiss.IndexFlatIP(embeddings.shape[1])
+    index.add(embeddings)
+    folder = Path(os.getenv('INDEX_DIR', str(ROOT / 'artifacts')))
+    folder.mkdir(parents=True, exist_ok=True)
+    version = uuid4().hex
+    faiss.write_index(index, str(folder / f'{version}.index'))
+    (folder / f'{version}.json').write_text(json.dumps({'model': MODEL, 'ids': frame['id'].astype(int).tolist()}), encoding='utf-8')
+    marker = folder / f'.CURRENT-{version}'
+    marker.write_text(version, encoding='ascii')
+    marker.replace(folder / 'CURRENT')
+    print(f'Published {len(frame)} products. Restart FastAPI to load this version.')
 
-df['combined_text'] = df['category'] + " " + df['notes'] + " " + df['name'] + " " + df['brand']
-
-print("🧠 한국어 AI 임베딩 모델을 다운로드합니다... (최초 1회 약 1~2분 소요)")
-model = SentenceTransformer('snunlp/KR-SBERT-V40K-klueNLI-augSTS')
-
-print("✨ 5,000개의 향수를 벡터로 변환 중입니다... (약 1분 소요)")
-embeddings = model.encode(df['combined_text'].tolist())
-
-print("🔍 FAISS 검색 인덱스를 구축하고 저장합니다...")
-dimension = embeddings.shape[1]
-index = faiss.IndexFlatL2(dimension)
-index.add(embeddings)
-
-# 완성된 벡터 지도(index)와 원본 데이터(pkl)를 파일로 저장
-faiss.write_index(index, "perfumes.index")
-with open("perfumes_meta.pkl", "wb") as f:
-    pickle.dump(df.to_dict('records'), f)
-
-print("🎉 완벽합니다! FAISS 인덱스 구축이 완료되었습니다.")
+if __name__ == '__main__':
+    main()

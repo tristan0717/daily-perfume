@@ -31,7 +31,7 @@ dependencies {
     runtimeOnly 'com.mysql:mysql-connector-j'
 
     // Swagger (springdoc)
-    implementation 'org.springdoc:springdoc-openapi-starter-webmvc-ui:2.8.0'
+    implementation 'org.springdoc:springdoc-openapi-starter-webmvc-ui:3.0.3'
 
     // Lombok (쓰면 유지)
     compileOnly 'org.projectlombok:lombok'
@@ -40,9 +40,24 @@ dependencies {
     // Test (이거 하나로 정리)
     testImplementation 'org.springframework.boot:spring-boot-starter-test'
 
-    implementation 'org.springdoc:springdoc-openapi-starter-webmvc-ui:2.8.5'
+    testRuntimeOnly 'com.h2database:h2'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 }
 
 tasks.named('test') {
     useJUnitPlatform()
+}
+
+
+// One source of images; package only validated thumbnails, never empty placeholders.
+tasks.register('prepareNoteAssets', Exec) {
+    workingDir rootProject.projectDir.parentFile
+    commandLine 'python3', 'scripts/prepare_assets.py'
+    inputs.dir('../perfume-frontend/public')
+    inputs.file('../scripts/prepare_assets.py')
+    outputs.dir(layout.buildDirectory.dir('generated-assets'))
+}
+tasks.named('processResources') {
+    dependsOn 'prepareNoteAssets'
+    from(layout.buildDirectory.dir('generated-assets'))
 }

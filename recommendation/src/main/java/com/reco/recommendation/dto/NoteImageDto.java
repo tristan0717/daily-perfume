@@ -1,3 +1,2 @@
 package com.reco.recommendation.dto;
-
-public record NoteImageDto(String note, String imageUrl) {}
+public record NoteImageDto(String note, String kor, String imageUrl) {}
