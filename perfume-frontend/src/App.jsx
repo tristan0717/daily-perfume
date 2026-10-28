@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
 import './App.css';
+import { memberWrite, startNaverLogin } from './memberApi';
 
 function App() {
   const [view, setView] = useState('home'); 
@@ -8,14 +9,32 @@ function App() {
   const [recommendations, setRecommendations] = useState([]);
   const discoveryRef = useRef(null);
   
-  const [likedPerfumes, setLikedPerfumes] = useState(() => {
-    const saved = localStorage.getItem('daily-perfume-likes');
-    return saved ? JSON.parse(saved) : [];
-  });
-
+  const [likedPerfumes, setLikedPerfumes] = useState([]);
+  const [account, setAccount] = useState(null);
+  const [accountMessage, setAccountMessage] = useState('');
+  const savingRef = useRef(new Set());
   useEffect(() => {
-    localStorage.setItem('daily-perfume-likes', JSON.stringify(likedPerfumes));
-  }, [likedPerfumes]);
+    let active = true;
+    axios.get('/api/auth/me').then(async ({data}) => {
+      if (!active) return;
+      setAccount(data);
+      if (data.authenticated) {
+        const result = await axios.get('/api/member/saved');
+        if (active) setLikedPerfumes(result.data);
+      }
+    }).catch(() => { if (active) setAccountMessage('회원 정보를 불러오지 못했어요. 새로고침 후 다시 시도해 주세요.'); });
+    if (new URLSearchParams(window.location.search).get('login') === 'failed') setAccountMessage('네이버 로그인을 완료하지 못했어요. 다시 시도해 주세요.');
+    return () => { active = false; };
+  }, []);
+  const logout = async () => {
+    try { await memberWrite('post', '/api/auth/logout'); setLikedPerfumes([]); setAccount(a => ({...a, authenticated:false})); setAccountMessage('로그아웃했어요.'); }
+    catch { setAccountMessage('로그아웃하지 못했어요. 다시 시도해 주세요.'); }
+  };
+  const accountControls = <div className="account-controls">
+    {account?.authenticated ? <><span>로그인됨</span><button type="button" onClick={logout}>로그아웃</button></>
+      : <button type="button" disabled={!account?.naverEnabled} onClick={startNaverLogin}>{!account ? '로그인 확인 중…' : account.naverEnabled ? '네이버로 로그인' : '로그인 연결 준비 중'}</button>}
+    <span role="status">{accountMessage}</span>
+  </div>;
 
   const [step, setStep] = useState(1);
   const [preferences, setPreferences] = useState({ season: '', vibe: '', avoid: '' });
@@ -46,13 +65,33 @@ function App() {
     }
   }, [messages, isLoading, view]);
 
-  const toggleLike = (e, p) => {
+  const toggleLike = async (e, p) => {
     e.stopPropagation();
-    if (likedPerfumes.find(item => item.name === p.name)) {
-      setLikedPerfumes(likedPerfumes.filter(item => item.name !== p.name));
-    } else {
-      setLikedPerfumes([...likedPerfumes, p]);
+    if (!account?.authenticated) {
+      setAccountMessage('향수 저장은 로그인 후 사용할 수 있어요. 설문과 추천은 바로 이용할 수 있어요.');
+      if (account?.naverEnabled && window.confirm('이 향수를 저장하려면 네이버 로그인이 필요해요. 로그인할까요?')) startNaverLogin();
+      return;
     }
+    const key = `${p.brand}|${p.name}`;
+    if (savingRef.current.has(key)) return;
+    savingRef.current.add(key); setAccountMessage('저장 상태를 변경하고 있어요…');
+    try {
+      let id = p.id;
+      // AI results without a database ID must resolve to one unambiguous catalog record.
+      if (!Number.isSafeInteger(Number(id)) || Number(id) <= 0) {
+        const {data} = await axios.get('/api/perfumes/db-search', {params:{keyword:p.name,size:50}});
+        const matches = (data.content || []).filter(x => x.name === p.name && x.brand === p.brand);
+        if (matches.length !== 1) throw new Error('카탈로그에서 이 향수를 정확히 확인하지 못했어요.');
+        id = matches[0].id;
+      }
+      const exists = likedPerfumes.some(x => Number(x.id) === Number(id));
+      await memberWrite(exists ? 'delete' : 'put', '/api/member/saved/' + encodeURIComponent(id));
+      const {data} = await axios.get('/api/member/saved'); setLikedPerfumes(data);
+      setAccountMessage(exists ? '저장을 해제했어요.' : '계정에 향수를 저장했어요.');
+    } catch (err) {
+      if (err.response?.status === 401) { setAccount(a => ({...a, authenticated:false})); setLikedPerfumes([]); }
+      setAccountMessage(err.response ? '저장하지 못했어요. 로그인 상태를 확인하고 다시 시도해 주세요.' : err.message);
+    } finally { savingRef.current.delete(key); }
   };
 
   const handleCardClick = async (p) => {
@@ -124,7 +163,7 @@ function App() {
             <span onClick={() => setView('chat')} style={{cursor:'pointer', fontWeight:600}}>AI 채팅 검색</span>
             <span onClick={() => setView('likes')} style={{cursor:'pointer', fontWeight:600}}>❤️ 찜 목록 ({likedPerfumes.length})</span>
           </div>
-        </nav>
+        {accountControls}</nav>
 
         <section className="hero--store">
           <div className="hero__inner" style={{ maxWidth: '600px', margin: '0 auto', textAlign: 'center' }}>
@@ -180,7 +219,7 @@ function App() {
         <nav className="nav" style={{ borderBottom: '1px solid #eee' }}>
           <a href="#" className="brand brand--dot" onClick={() => setView('home')}>Daily Perfume</a>
           <span style={{ fontWeight: 600, cursor: 'pointer', color: '#111' }} onClick={() => setView('home')}>취소하고 홈으로</span>
-        </nav>
+        {accountControls}</nav>
         <div style={{ flex: 1, display: 'flex', justifyContent: 'center', alignItems: 'center', textAlign: 'center' }}>
           <div style={{ maxWidth: '400px', width: '90%' }}>
             <div style={{ marginBottom: '20px', color: 'var(--primary)', fontWeight: 'bold' }}>Step {step} / 3</div>
@@ -226,7 +265,7 @@ function App() {
         <nav className="nav">
           <a href="#" className="brand brand--dot" onClick={() => setView('home')}>Daily Perfume</a>
           <span style={{ fontWeight: 600, cursor: 'pointer' }} onClick={() => setView('chat')}>Back to Chat</span>
-        </nav>
+        {accountControls}</nav>
         <div style={{padding:'40px', maxWidth:'800px', margin:'0 auto'}}>
           <h2 style={{borderBottom:'2px solid var(--border)', paddingBottom:'10px', color:'#111'}}>❤️ 내가 찜한 향수</h2>
           {likedPerfumes.length === 0 ? (
@@ -239,6 +278,7 @@ function App() {
                   <div style={{color:'var(--primary)', fontWeight:700, fontSize:'11px', marginBottom:'4px'}}>{p.brand}</div>
                   <div style={{fontSize:'1.1rem', fontWeight:800, marginBottom:'10px', color:'#111', lineHeight:1.2}}>{p.name}</div>
                   
+                  {p.notes && <p style={{fontSize:'12px',lineHeight:1.6}}>등록된 노트: {p.notes}</p>}
                   <div className="note-list" style={{display: 'flex', flexDirection: 'column', gap: '5px'}}>
                     {['topNotes', 'middleNotes', 'baseNotes'].map(type => (
                       p[type] && p[type].length > 0 && (
@@ -288,7 +328,7 @@ function App() {
           <span style={{ fontWeight: 600, cursor: 'pointer' }} onClick={() => setView('likes')}>❤️ 찜한 향수 ({likedPerfumes.length})</span>
           <span style={{ fontWeight: 600, cursor: 'pointer' }} onClick={() => setView('home')}>Back to Home</span>
         </div>
-      </nav>
+      {accountControls}</nav>
 
       <main className="chat-container" style={{ display: 'flex', flexDirection: 'column', height: 'calc(100vh - 80px)' }}>
         

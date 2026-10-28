@@ -5,7 +5,9 @@ export default defineConfig({
   plugins: [react()],
   server: {
     proxy: {
-      '/api': 'http://localhost:8080' // 자바 서버(8080)와 연결
+      '/api': 'http://localhost:8080',
+      '/oauth2': 'http://localhost:8080',
+      '/login/oauth2': 'http://localhost:8080' // 자바 서버(8080)와 연결
     }
   }
 })
