@@ -13,6 +13,11 @@ import java.util.Map;
 @RestControllerAdvice
 @Hidden
 public class GlobalExceptionHandler {
+    @ExceptionHandler(org.springframework.web.server.ResponseStatusException.class)
+    public ResponseEntity<Object> handleStatus(org.springframework.web.server.ResponseStatusException e) {
+        return ResponseEntity.status(e.getStatusCode()).body(Map.of("error", "request_rejected", "status", e.getStatusCode().value()));
+    }
+
 
     /**
      * 데이터를 찾지 못하거나 잘못된 인자가 들어왔을 때 발생 (404 Not Found)

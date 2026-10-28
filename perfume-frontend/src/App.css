@@ -174,3 +174,4 @@ body {
 }
 .chat-submit:hover { background: var(--primary-700); }
 .chat-submit svg { width: 16px; height: 16px; }
+.account-controls{display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-size:12px}.account-controls button{border:1px solid #b7c5b2;border-radius:6px;padding:10px 14px;background:#f4f8f1;color:#263e24;cursor:pointer}.account-controls button:disabled{opacity:.6;cursor:default}.account-controls [role=status]{max-width:320px;line-height:1.5}@media(max-width:700px){.nav{flex-wrap:wrap;gap:12px}.account-controls{width:100%}}

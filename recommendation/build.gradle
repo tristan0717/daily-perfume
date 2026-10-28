@@ -19,6 +19,13 @@ repositories {
 }
 
 dependencies {
+    implementation 'org.springframework.boot:spring-boot-starter-security-oauth2-client'
+    implementation 'org.springdoc:springdoc-openapi-starter-webmvc-ui:3.0.0'
+    implementation 'com.fasterxml.jackson.core:jackson-databind'
+    testImplementation 'org.springframework.security:spring-security-test'
+    testImplementation 'org.springframework.boot:spring-boot-starter-webmvc-test'
+    testRuntimeOnly 'com.h2database:h2'
+
     // Web (이거 하나면 충분)
     implementation 'org.springframework.boot:spring-boot-starter-web'
 
@@ -31,7 +38,7 @@ dependencies {
     runtimeOnly 'com.mysql:mysql-connector-j'
 
     // Swagger (springdoc)
-    implementation 'org.springdoc:springdoc-openapi-starter-webmvc-ui:2.8.0'
+
 
     // Lombok (쓰면 유지)
     compileOnly 'org.projectlombok:lombok'
@@ -40,7 +47,7 @@ dependencies {
     // Test (이거 하나로 정리)
     testImplementation 'org.springframework.boot:spring-boot-starter-test'
 
-    implementation 'org.springdoc:springdoc-openapi-starter-webmvc-ui:2.8.5'
+
 }
 
 tasks.named('test') {
